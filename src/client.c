@@ -960,6 +960,11 @@ static bool handle_client_work(PgSocket *client, PktHdr *pkt)
       if (!inspect_bind_packet(client, pkt, &ps_action))
         return false;
     }
+	if (ps_action == PS_HANDLE && incomplete_pkt(pkt)) {
+        client->packet_cb_state.flag = CB_WANT_COMPLETE_PACKET;
+        sbuf_prepare_fetch(sbuf, pkt->len);
+        return true;
+	}
     break;
 
 	case 'D':		/* Describe */
@@ -1028,8 +1033,15 @@ static bool handle_client_work(PgSocket *client, PktHdr *pkt)
         return true;
 
       case 'B':
-        client->packet_cb_state.flag = CB_REWRITE_PACKET;
-        sbuf_prepare_fetch(sbuf, pkt->len);
+       if (!handle_bind_command(client, pkt))
+          return false;
+
+        if (client->packet_cb_state.flag == CB_HANDLE_COMPLETE_PACKET) {
+          /* pkt already read from sbuf with cb */
+          client->packet_cb_state.flag = CB_NONE;
+        } else {
+          sbuf_prepare_skip(sbuf, pkt->len);
+        }
         return true;
 
       case 'D':
@@ -1050,12 +1062,9 @@ static bool handle_partial_client_work(PgSocket *client, PktHdr *pkt_hdr, unsign
 {
 	struct PktBuf *pkt = pktbuf_temp();
 
+	slog_info(client, "handle_partial_client_work %c offset=%d", pkt_hdr->type, offset);
   switch (pkt_hdr->type) {
     case 'B':
-      if (offset == 0) {
-        if (!handle_bind_command(client, pkt_hdr, offset, data, pkt))
-          return false;
-      }
       pktbuf_put_bytes(pkt, data->data + mbuf_consumed(data) , mbuf_avail_for_read(data));
       break;
   }

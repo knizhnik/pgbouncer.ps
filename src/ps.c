@@ -143,7 +143,7 @@ bool handle_parse_command(PgSocket *client, PktHdr *pkt)
   return true;
 }
 
-bool handle_bind_command(PgSocket *client, PktHdr *pkt_hdr, unsigned offset, struct MBuf *data, PktBuf *pkt)
+bool handle_bind_command(PgSocket *client, PktHdr *pkt)
 {
   PgSocket *server = client->link;
   struct PgBindPacket *bp;
@@ -152,12 +152,11 @@ bool handle_bind_command(PgSocket *client, PktHdr *pkt_hdr, unsigned offset, str
   PktBuf *buf;
   struct OutstandingParsePacket *opp = NULL;
 
-  const uint8_t *ptr;
   uint32_t len;
 
   Assert(server);
 
-  if (!unmarshall_bind_packet(client, pkt_hdr, &bp))
+  if (!unmarshall_bind_packet(client, pkt, &bp))
     return false;
 
   /* update stats */
@@ -197,16 +196,16 @@ bool handle_bind_command(PgSocket *client, PktHdr *pkt_hdr, unsigned offset, str
 
   slog_debug(client, "handle_bind_command: mapped statement '%s' (query hash '%ld%ld') to '%s'", ps->name, ps->query_hash[0], ps->query_hash[1], link_ps->name);
 
-  len = pkt_hdr->len - strlen(ps->name) + strlen(link_ps->name);
-  pktbuf_put_char(pkt, pkt_hdr->type);
-  pktbuf_put_uint32(pkt, len - 1); /* length does not include type byte */
-  pktbuf_put_string(pkt, bp->portal);
-  pktbuf_put_string(pkt, link_ps->name);
-
-  /* Skip original bytes we replaced */
-  if (!mbuf_get_bytes(data, pkt->write_pos - strlen(link_ps->name) + strlen(ps->name), &ptr))
-    return false;
-
+  len = pkt->len - strlen(bp->name) + strlen(link_ps->name);
+  buf = pktbuf_dynamic(len);
+  pktbuf_put_char(buf, pkt->type);
+  pktbuf_put_uint32(buf, len - 1); /* length does not include type byte */
+  pktbuf_put_string(buf, bp->portal);
+  pktbuf_put_string(buf, link_ps->name);
+  pktbuf_put_bytes(buf, pkt->data.data + buf->write_pos, len - buf->write_pos);
+  if (!pktbuf_send_queued(buf, server)) {
+      return false;
+  }
   /* update stats */
   link_ps->bind_count++;
 

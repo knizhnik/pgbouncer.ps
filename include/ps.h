@@ -20,7 +20,7 @@ typedef struct PgServerPreparedStatement
 } PgServerPreparedStatement;
 
 bool handle_parse_command(PgSocket *client, PktHdr *pkt);
-bool handle_bind_command(PgSocket *client, PktHdr *pkt_hdr, unsigned offset, struct MBuf *data, PktBuf *pkt);
+bool handle_bind_command(PgSocket *client, PktHdr *pkt);
 bool handle_describe_command(PgSocket *client, PktHdr *pkt);
 bool handle_close_statement_command(PgSocket *client, PktHdr *pkt, PgClosePacket *close_packet);
 

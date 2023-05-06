@@ -219,7 +219,7 @@ bool is_close_statement_packet(PgClosePacket *close_packet)
 PktBuf *create_parse_packet(char *statement, PgParsePacket *pkt)
 {
   PktBuf *buf;
-  buf = pktbuf_dynamic(pkt->len - strlen(pkt->name + strlen(statement)));
+  buf = pktbuf_dynamic(pkt->len - strlen(pkt->name) + strlen(statement));
   pktbuf_start_packet(buf, 'P');
   pktbuf_put_string(buf, statement);
   pktbuf_put_string(buf, pkt->query);
