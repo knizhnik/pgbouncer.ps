@@ -1,27 +1,13 @@
 #include "bouncer.h"
 
 #include <usual/crypto/csrandom.h>
-#include <usual/hashing/spooky.h>
 #include <usual/hashtab-impl.h>
 
 static PgParsedPreparedStatement *create_prepared_statement(PgParsePacket *parse_packet)
 {
-  static bool initialized;
-	static uint32_t rand_seed;
-  PgParsedPreparedStatement *s = NULL;
-
-	if (!initialized) {
-		initialized = true;
-		rand_seed = csrandom();
-	}
-
-  s = (PgParsedPreparedStatement *)malloc(sizeof(*s));
+  PgParsedPreparedStatement *s = (PgParsedPreparedStatement *)malloc(sizeof(*s));
   s->name = parse_packet->name;
   s->pkt = parse_packet;
-  s->query_hash[0] = rand_seed;
-	s->query_hash[1] = 0;
-	spookyhash(parse_packet->query, strlen(parse_packet->query), &s->query_hash[0], &s->query_hash[1]);
-  
   return s;
 }
 
@@ -31,13 +17,12 @@ static PgServerPreparedStatement *create_server_prepared_statement(PgSocket *cli
   char statement[23];
 
   s = (PgServerPreparedStatement *)malloc(sizeof(*s));
-  *(uint64_t *)&s->query_hash[0] = ps->query_hash[0];
-  *(uint64_t *)&s->query_hash[1] = ps->query_hash[1];
   s->bind_count = 0;
 
   // FIXME: length??
   snprintf(statement, 23, "B_%ld", client->link->nextUniquePreparedStatementID++);
   s->name = strdup(statement);
+  s->query = strdup(ps->pkt->query);
 
   return s;
 }
@@ -70,13 +55,14 @@ static bool register_prepared_statement(PgSocket *server, PgServerPreparedStatem
 
       slog_noise(server, "prepared statement '%s' deleted from server cache", current->name);
       free(current->name);
+      free(current->query);
       free(current);
       break;
     }
   }
 
   slog_noise(server, "prepared statement '%s' added to server cache, %d cached items", stmt->name, cached_query_count + 1);
-  HASH_ADD(hh, server->server_prepared_statements, query_hash, sizeof(stmt->query_hash), stmt);
+  HASH_ADD_KEYPTR(hh, server->server_prepared_statements, stmt->query, strlen(stmt->query), stmt);
 
   return true;
 }
@@ -99,10 +85,10 @@ bool handle_parse_command(PgSocket *client, PktHdr *pkt)
   client->pool->stats.ps_client_parse_count++;
 
   ps = create_prepared_statement(pp);
-  HASH_FIND(hh, server->server_prepared_statements, ps->query_hash, sizeof(ps->query_hash), link_ps);
+  HASH_FIND_STR(server->server_prepared_statements, pp->query, link_ps);
   if (link_ps) {
     /* Statement already prepared on this link, do not forward packet */
-    slog_debug(client, "handle_parse_command: mapping statement '%s' to '%s' (query hash '%ld%ld')", ps->name, link_ps->name, ps->query_hash[0], ps->query_hash[1]);
+    slog_debug(client, "handle_parse_command: mapping statement '%s' to '%s' (query '%s')", ps->name, link_ps->name, pp->query);
 
     buf = create_parse_complete_packet();
     if (!pktbuf_send_immediate(buf, client)) {
@@ -118,7 +104,7 @@ bool handle_parse_command(PgSocket *client, PktHdr *pkt)
     /* Statement not prepared on this link, sent modified P packet */
     link_ps = create_server_prepared_statement(client, ps);
 
-    slog_debug(client, "handle_parse_command: creating mapping for statement '%s' to '%s' (query hash '%ld%ld')", ps->name, link_ps->name, ps->query_hash[0], ps->query_hash[1]);
+    slog_debug(client, "handle_parse_command: creating mapping for statement '%s' to '%s' (query '%s')", ps->name, link_ps->name, pp->query);
 
     buf = create_parse_packet(link_ps->name, ps->pkt);
 
@@ -168,13 +154,13 @@ bool handle_bind_command(PgSocket *client, PktHdr *pkt)
 	  return false;
   }
 
-  HASH_FIND(hh, server->server_prepared_statements, ps->query_hash, sizeof(ps->query_hash), link_ps);
+  HASH_FIND_STR(server->server_prepared_statements, ps->pkt->query, link_ps);
 
   if (!link_ps) {
     /* Statement is not prepared on this link, sent P packet first */
     link_ps = create_server_prepared_statement(client, ps);
     
-    slog_debug(server, "handle_bind_command: prepared statement '%s' (query hash '%ld%ld') not available on server, preparing '%s' before bind", ps->name, ps->query_hash[0], ps->query_hash[1], link_ps->name);
+    slog_debug(server, "handle_bind_command: prepared statement '%s' (query '%s') not available on server, preparing '%s' before bind", ps->name, ps->pkt->query, link_ps->name);
 
     buf = create_parse_packet(link_ps->name, ps->pkt);
 
@@ -194,7 +180,7 @@ bool handle_bind_command(PgSocket *client, PktHdr *pkt)
       return false;
   }
 
-  slog_debug(client, "handle_bind_command: mapped statement '%s' (query hash '%ld%ld') to '%s'", ps->name, ps->query_hash[0], ps->query_hash[1], link_ps->name);
+  slog_debug(client, "handle_bind_command: mapped statement '%s' (query '%s') to '%s'", ps->name, ps->pkt->query, link_ps->name);
 
   len = pkt->len - strlen(bp->name) + strlen(link_ps->name);
   buf = pktbuf_dynamic(len);
@@ -248,7 +234,7 @@ bool handle_describe_command(PgSocket *client, PktHdr *pkt)
 	  return false;
   }
 
-  HASH_FIND(hh, client->link->server_prepared_statements, ps->query_hash, sizeof(ps->query_hash), link_ps);
+  HASH_FIND_STR(client->link->server_prepared_statements, ps->pkt->query, link_ps);
 
   // TODO: link_ps missing -> no parse, should not be possible
 
@@ -256,7 +242,7 @@ bool handle_describe_command(PgSocket *client, PktHdr *pkt)
   if (!sbuf_flush(sbuf))
     return false;
 
-  slog_debug(client, "handle_describe_command: mapped statement '%s' (query hash '%ld%ld') to '%s'", ps->name, ps->query_hash[0], ps->query_hash[1], link_ps->name);
+  slog_debug(client, "handle_describe_command: mapped statement '%s' (query '%s') to '%s'", ps->name, ps->pkt->query, link_ps->name);
 
   buf = create_describe_packet(link_ps->name);
 
@@ -323,6 +309,7 @@ void ps_server_free(PgSocket *server)
   HASH_ITER(hh, server->server_prepared_statements, current, tmp_s) {
     HASH_DEL(server->server_prepared_statements, current);
     free(current->name);
+    free(current->query);
     free(current);
   }
 

@@ -5,16 +5,15 @@
 
 typedef struct PgParsedPreparedStatement
 {
-	const char *name;
-  uint64_t query_hash[2];
+  const char    *name;
   PgParsePacket *pkt;
   UT_hash_handle hh;
 } PgParsedPreparedStatement;
 
 typedef struct PgServerPreparedStatement
 {
-  const uint64_t query_hash[2];
   char *name;
+  char *query;
   uint64_t bind_count;
   UT_hash_handle hh;
 } PgServerPreparedStatement;
