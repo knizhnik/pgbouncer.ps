@@ -4,9 +4,24 @@
 bool inspect_parse_packet(PgSocket *client, PktHdr *pkt, uint8_t *ps_action)
 {
   const char *statement;
+  const char *query;
+  uint16_t num_parameters;
 
   if (!mbuf_get_string(&pkt->data, &statement))
     return false;
+
+  if (!mbuf_get_string(&pkt->data, &query))
+    return false;
+
+  /* number of parameter data types */
+  if (!mbuf_get_uint16be(&pkt->data, &num_parameters))
+	  return false;;
+
+  /* We are not taken in account parameters types when lookup for server prepared statement,
+   * so we should reject prepared statements with parameters
+   */
+  if (num_parameters != 0)
+	  return false;
 
   if (strlen(statement) > 0) {
     slog_noise(client, "inspect_parse_packet: type=%c, len=%d, statement=%s", pkt->type, pkt->len, statement);
@@ -15,7 +30,6 @@ bool inspect_parse_packet(PgSocket *client, PktHdr *pkt, uint8_t *ps_action)
     slog_noise(client, "inspect_parse_packet: type=%c, len=%d, statement=<empty>", pkt->type, pkt->len);
     *ps_action = PS_IGNORE;
   }
-  
   return true;
 }
 
