@@ -14,7 +14,6 @@ typedef struct PgServerPreparedStatement
 {
   char *name;
   char *query;
-  uint64_t bind_count;
   UT_hash_handle hh;
 } PgServerPreparedStatement;
 

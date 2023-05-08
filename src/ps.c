@@ -3,6 +3,23 @@
 #include <usual/crypto/csrandom.h>
 #include <usual/hashtab-impl.h>
 
+/*
+ * Like uthash HASH_DELETE, but doesn't remove item from hash table just
+ * unlink element from the doubly-linked-list.
+ */
+#define HASH_UNLINK(hh, head, delptr)										\
+do {																             \
+    struct UT_hash_handle *_hd_hh_del = &(delptr)->hh;				             \
+    if (_hd_hh_del->prev != NULL) {                                              \
+      HH_FROM_ELMT((head)->hh.tbl, _hd_hh_del->prev)->next = _hd_hh_del->next;   \
+    } else {                                                                     \
+      DECLTYPE_ASSIGN(head, _hd_hh_del->next);                                   \
+    }                                                                            \
+    if (_hd_hh_del->next != NULL) {                                              \
+      HH_FROM_ELMT((head)->hh.tbl, _hd_hh_del->next)->prev = _hd_hh_del->prev;   \
+    }                                                                            \
+} while (0)
+
 static PgParsedPreparedStatement *create_prepared_statement(PgParsePacket *parse_packet)
 {
   PgParsedPreparedStatement *s = (PgParsedPreparedStatement *)malloc(sizeof(*s));
@@ -17,7 +34,6 @@ static PgServerPreparedStatement *create_server_prepared_statement(PgSocket *cli
   char statement[23];
 
   s = (PgServerPreparedStatement *)malloc(sizeof(*s));
-  s->bind_count = 0;
 
   // FIXME: length??
   snprintf(statement, 23, "B_%ld", client->link->nextUniquePreparedStatementID++);
@@ -27,9 +43,6 @@ static PgServerPreparedStatement *create_server_prepared_statement(PgSocket *cli
   return s;
 }
 
-static int bind_count_sort(struct PgServerPreparedStatement *a, struct PgServerPreparedStatement *b) {
-    return (a->bind_count - b->bind_count);
-}
 
 static bool register_prepared_statement(PgSocket *server, PgServerPreparedStatement *stmt)
 {
@@ -39,7 +52,7 @@ static bool register_prepared_statement(PgSocket *server, PgServerPreparedStatem
 
   if (cached_query_count >= (unsigned int)cf_prepared_statement_cache_queries)
   {
-    HASH_SORT(server->server_prepared_statements, bind_count_sort);
+    /* Remove least recently used statement */
     HASH_ITER(hh, server->server_prepared_statements, current, tmp) {
       HASH_DEL(server->server_prepared_statements, current);
       cached_query_count--;
@@ -179,6 +192,12 @@ bool handle_bind_command(PgSocket *client, PktHdr *pkt)
     if (!register_prepared_statement(server, link_ps))
       return false;
   }
+  else
+  {
+	  /* Maintain LRU double-linke list: move element to the end of the list */
+	  HASH_UNLINK(hh, server->server_prepared_statements, link_ps);
+	  HASH_APPEND_LIST(hh, server->server_prepared_statements, link_ps);
+  }
 
   slog_debug(client, "handle_bind_command: mapped statement '%s' (query '%s') to '%s'", ps->name, ps->pkt->query, link_ps->name);
 
@@ -192,9 +211,6 @@ bool handle_bind_command(PgSocket *client, PktHdr *pkt)
   if (!pktbuf_send_queued(buf, server)) {
       return false;
   }
-  /* update stats */
-  link_ps->bind_count++;
-
   free(bp->portal);
   free(bp->name);
   free(bp);
